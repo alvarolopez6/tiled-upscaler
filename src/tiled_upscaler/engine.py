@@ -91,6 +91,35 @@ class UpscalerEngine:
 
         return text_outputs.last_hidden_state
 
+    def encode_prompt_pair(
+        self,
+        prompt: str,
+        negative_prompt: str = "",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode negative and positive prompts for classifier-free guidance."""
+        tokenizer = self.load_tokenizer()
+        text_encoder = self.load_text_encoder()
+
+        encoded_prompts = tokenizer(
+            [negative_prompt, prompt],
+            padding="max_length",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        input_ids = encoded_prompts.input_ids.to(self.device)
+        attention_mask = encoded_prompts.attention_mask.to(self.device)
+
+        with torch.no_grad():
+            text_outputs = text_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            ).last_hidden_state
+
+        unconditional_embeddings = text_outputs[0:1]
+        conditional_embeddings = text_outputs[1:2]
+        return unconditional_embeddings, conditional_embeddings
+
     def load_vae(self) -> AutoencoderKL:
         """Load and configure the VAE used to encode and decode images."""
         if self.vae is None:
@@ -105,6 +134,234 @@ class UpscalerEngine:
             self.vae.eval()
 
         return self.vae
+
+    def encode_image(self, image: torch.Tensor) -> torch.Tensor:
+        """Encode a normalized RGB tensor into scaled VAE latents.
+
+        The input must have shape ``[batch, 3, height, width]`` and values in
+        the ``[-1, 1]`` range. Spatial dimensions must be divisible by 8.
+        """
+        if image.ndim != 4 or image.shape[1] != 3:
+            raise ValueError("image must have shape [batch, 3, height, width]")
+        if image.shape[2] % 8 != 0 or image.shape[3] % 8 != 0:
+            raise ValueError("image height and width must be divisible by 8")
+
+        vae = self.load_vae()
+        image = image.to(device=self.device, dtype=self.dtype)
+
+        with torch.no_grad():
+            latent_distribution = vae.encode(image).latent_dist
+            latents = latent_distribution.sample()
+
+        return latents * vae.config.scaling_factor
+
+    def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        """Decode scaled VAE latents into an RGB tensor in the ``[0, 1]`` range."""
+        if latents.ndim != 4 or latents.shape[1] != 4:
+            raise ValueError("latents must have shape [batch, 4, height, width]")
+
+        vae = self.load_vae()
+        latents = latents.to(device=self.device, dtype=self.dtype)
+        latents = latents / vae.config.scaling_factor
+
+        with torch.no_grad():
+            image = vae.decode(latents).sample
+
+        return (image / 2 + 0.5).clamp(0, 1)
+
+    def inject_noise(
+        self,
+        latents: torch.Tensor,
+        timestep: torch.Tensor | int,
+        noise: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Add scheduler-controlled noise to scaled latents."""
+        if latents.ndim != 4 or latents.shape[1] != 4:
+            raise ValueError("latents must have shape [batch, 4, height, width]")
+
+        scheduler = self.load_scheduler()
+        latents = latents.to(device=self.device, dtype=self.dtype)
+
+        if noise is None:
+            noise = torch.randn_like(latents)
+        else:
+            noise = noise.to(device=self.device, dtype=self.dtype)
+
+        if isinstance(timestep, int):
+            timestep = torch.tensor(timestep, device=self.device, dtype=torch.long)
+        else:
+            timestep = timestep.to(device=self.device)
+
+        return scheduler.add_noise(latents, noise, timestep)
+
+    @staticmethod
+    def creativity_to_strength(creativity: float) -> float:
+        """Map creativity from [0, 1] to a conservative diffusion strength."""
+        if not 0.0 <= creativity <= 1.0:
+            raise ValueError("creativity must be between 0.0 and 1.0")
+
+        minimum_strength = 0.15
+        maximum_strength = 0.75
+        return minimum_strength + creativity * (
+            maximum_strength - minimum_strength
+        )
+
+    def prepare_noisy_latents(
+        self,
+        latents: torch.Tensor,
+        creativity: float,
+        steps: int,
+        noise: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Add creativity-controlled noise and return denoising timesteps."""
+        if steps <= 0:
+            raise ValueError("steps must be positive")
+
+        scheduler = self.load_scheduler()
+        scheduler.set_timesteps(steps, device=self.device)
+        strength = self.creativity_to_strength(creativity)
+
+        init_timestep = min(int(steps * strength), steps)
+        start_step = max(steps - init_timestep, 0)
+        timesteps = scheduler.timesteps[start_step:]
+        timestep = timesteps[0]
+
+        noisy_latents = self.inject_noise(latents, timestep, noise)
+        return noisy_latents, timesteps
+
+    def denoise_step(
+        self,
+        latents: torch.Tensor,
+        timestep: torch.Tensor | int,
+        text_embeddings: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run one basic UNet and scheduler denoising step."""
+        unet = self.load_unet()
+        scheduler = self.load_scheduler()
+
+        latents = latents.to(device=self.device, dtype=self.dtype)
+        text_embeddings = text_embeddings.to(
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        if isinstance(timestep, int):
+            timestep = torch.tensor(timestep, device=self.device, dtype=torch.long)
+        else:
+            timestep = timestep.to(device=self.device)
+
+        model_input = scheduler.scale_model_input(latents, timestep)
+
+        with torch.no_grad():
+            noise_prediction = unet(
+                model_input,
+                timestep,
+                encoder_hidden_states=text_embeddings,
+            ).sample
+
+        return scheduler.step(
+            noise_prediction,
+            timestep,
+            latents,
+        ).prev_sample
+
+    def denoise_step_cfg(
+        self,
+        latents: torch.Tensor,
+        timestep: torch.Tensor | int,
+        unconditional_embeddings: torch.Tensor,
+        conditional_embeddings: torch.Tensor,
+        guidance_scale: float = 7.5,
+    ) -> torch.Tensor:
+        """Run one denoising step with classifier-free guidance."""
+        if guidance_scale < 0:
+            raise ValueError("guidance_scale must not be negative")
+
+        unet = self.load_unet()
+        scheduler = self.load_scheduler()
+        latents = latents.to(device=self.device, dtype=self.dtype)
+        unconditional_embeddings = unconditional_embeddings.to(
+            device=self.device,
+            dtype=self.dtype,
+        )
+        conditional_embeddings = conditional_embeddings.to(
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        if isinstance(timestep, int):
+            timestep = torch.tensor(timestep, device=self.device, dtype=torch.long)
+        else:
+            timestep = timestep.to(device=self.device)
+
+        latent_model_input = torch.cat([latents, latents])
+        latent_model_input = scheduler.scale_model_input(
+            latent_model_input,
+            timestep,
+        )
+        text_embeddings = torch.cat(
+            [unconditional_embeddings, conditional_embeddings]
+        )
+
+        with torch.no_grad():
+            noise_predictions = unet(
+                latent_model_input,
+                timestep,
+                encoder_hidden_states=text_embeddings,
+            ).sample
+
+        unconditional_noise, conditional_noise = noise_predictions.chunk(2)
+        guided_noise = unconditional_noise + guidance_scale * (
+            conditional_noise - unconditional_noise
+        )
+
+        return scheduler.step(
+            guided_noise,
+            timestep,
+            latents,
+        ).prev_sample
+
+    def denoise(
+        self,
+        latents: torch.Tensor,
+        timesteps: torch.Tensor,
+        text_embeddings: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the basic denoising loop without ControlNet or CFG."""
+        if timesteps.ndim != 1 or timesteps.numel() == 0:
+            raise ValueError("timesteps must be a non-empty 1D tensor")
+
+        for timestep in timesteps:
+            latents = self.denoise_step(
+                latents,
+                timestep,
+                text_embeddings,
+            )
+
+        return latents
+
+    def denoise_cfg(
+        self,
+        latents: torch.Tensor,
+        timesteps: torch.Tensor,
+        unconditional_embeddings: torch.Tensor,
+        conditional_embeddings: torch.Tensor,
+        guidance_scale: float = 7.5,
+    ) -> torch.Tensor:
+        """Run the denoising loop with classifier-free guidance."""
+        if timesteps.ndim != 1 or timesteps.numel() == 0:
+            raise ValueError("timesteps must be a non-empty 1D tensor")
+
+        for timestep in timesteps:
+            latents = self.denoise_step_cfg(
+                latents,
+                timestep,
+                unconditional_embeddings,
+                conditional_embeddings,
+                guidance_scale,
+            )
+
+        return latents
 
     def load_unet(self) -> UNet2DConditionModel:
         """Load the conditional UNet used for noise prediction."""
