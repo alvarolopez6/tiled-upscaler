@@ -1,61 +1,64 @@
 # Tiled Latent Diffusion Upscaler
 
-> An educational image-upscaling project built with Stable Diffusion 1.5 and
-> ControlNet Tile. The diffusion components are loaded and called explicitly;
-> this project does not use an opaque high-level image-generation pipeline.
+[English](README.md) | [Español](README.es.md)
 
-**Estado: experimental.** The end-to-end engine has been exercised on an Apple
-Silicon Mac with MPS, including tiled denoising. Results can change image
-details and are not guaranteed to preserve every pixel of the input.
+An educational image-upscaling project built with Stable Diffusion 1.5 and
+ControlNet Tile. Model components and the diffusion loop are implemented
+explicitly; the project does not use an opaque high-level image-generation
+pipeline.
 
-## Qué hace
+**Status: experimental.** The end-to-end engine has been exercised on Apple
+Silicon with MPS, including tiled denoising. Results may change image details
+and are not guaranteed to preserve every input pixel.
 
-El motor redimensiona una imagen, la codifica en latentes con el VAE, añade
-ruido según `creativity`, y ejecuta denoising con UNet, ControlNet Tile,
-Classifier-Free Guidance y Euler Ancestral. Las predicciones se calculan por
-parches y se mezclan antes de actualizar los latentes globales.
+## What it does
+
+The engine resizes an input image, encodes it into VAE latents, adds noise
+according to `creativity`, then denoises with the UNet, ControlNet Tile,
+Classifier-Free Guidance, and the Euler Ancestral scheduler. Noise predictions
+are computed per tile and blended before the global latents are updated.
 
 ```text
-imagen + prompt
+image + prompt
       ↓
-VAE → latentes con ruido
+VAE → noisy latents
       ↓
-ControlNet Tile + UNet + scheduler, por parches
+ControlNet Tile + UNet + scheduler, per tile
       ↓
-VAE → imagen ampliada
+VAE → upscaled image
 ```
 
-## Requisitos
+## Requirements
 
-- Python 3.12 (versión fijada en `.python-version`).
+- Python 3.12 (specified in `.python-version`).
 - [`uv`](https://docs.astral.sh/uv/).
-- Memoria suficiente para cargar Stable Diffusion 1.5 y ControlNet Tile.
-- Hugging Face Hub para descargar los modelos la primera vez.
+- Enough memory to load Stable Diffusion 1.5 and ControlNet Tile.
+- Hugging Face Hub access to download the models on first use.
 
-El dispositivo se selecciona automáticamente: CUDA, MPS y finalmente CPU. En
-GPU se usa `float16`; en CPU, `float32`. El procesamiento tiled reduce memoria
-de activaciones, pero **los pesos de los modelos siguen ocupando varios GB**.
-CPU puede ser muy lento y una GPU con poca VRAM puede requerir tiles menores.
+The device is selected automatically: CUDA, MPS, then CPU. GPU inference uses
+`float16`; CPU inference uses `float32`. Tiling reduces activation memory, but
+**the model weights still require several GB of memory**. CPU inference can be
+very slow, and GPUs with little VRAM may need smaller tiles.
 
-## Instalación
+## Installation
 
 ```bash
 uv sync
 ```
 
-Los pesos se descargan a la caché de Hugging Face en el primer uso. Se puede
-usar `HF_HOME` para elegir otra ubicación. Los modelos y las imágenes de entrada
-no forman parte del repositorio.
+Model weights are downloaded to the Hugging Face cache on first use. Set
+`HF_HOME` to use a different cache location. Model weights and input images are
+not stored in this repository.
 
-## Uso del CLI
+## CLI usage
 
-Ver las opciones sin cargar los modelos:
+Show the available options without running inference:
 
 ```bash
 uv run tiled-upscaler --help
 ```
 
-Ejemplo:
+Example:
 
 ```bash
 uv run tiled-upscaler \
@@ -70,15 +73,15 @@ uv run tiled-upscaler \
   --prompt "high resolution landscape photograph, sharp focus, detailed textures"
 ```
 
-`tile-size` y `overlap` están en píxeles de salida y deben ser compatibles con
-el factor espacial del VAE (8 para SD 1.5). `steps` es el número de pasos que
-prepara el scheduler; `creativity` selecciona cuántos se usan efectivamente.
-El CLI imprime dispositivo, número de parches por paso, pasos efectivos y
-tiempo. En CUDA muestra memoria pico asignada; en MPS muestra memoria asignada
-actual, no el pico.
+`tile-size` and `overlap` are specified in output-image pixels and must be
+compatible with the VAE spatial factor (8 for SD 1.5). `steps` is the schedule
+length; `creativity` determines how many steps are actually used. The CLI
+reports the device, tiles per denoising step, effective steps, and elapsed time.
+On CUDA it reports peak allocated memory; on MPS it reports current allocated
+memory, not the peak.
 
-También se puede usar el motor desde Python con `UpscalerEngine.upscale()`. El
-método recibe una imagen PIL y devuelve un tensor RGB `[1, 3, H, W]` en `[0, 1]`.
+The engine can also be used from Python with `UpscalerEngine.upscale()`. It
+accepts a PIL image and returns an RGB tensor `[1, 3, H, W]` in `[0, 1]`.
 
 ## Tests
 
@@ -86,42 +89,41 @@ método recibe una imagen PIL y devuelve un tensor RGB `[1, 3, H, W]` en `[0, 1]
 uv run pytest
 ```
 
-Los tests cubren coordenadas, máscaras gaussianas, blending NumPy 2D, blending
-de latentes PyTorch y preprocesamiento de imágenes. La última ejecución
-reportada pasó 28 casos. Los tests unitarios no cargan los modelos; las
-validaciones de inferencia se hacen por separado y requieren bastante memoria.
+Tests cover tile coordinates, Gaussian masks, 2D NumPy blending, PyTorch latent
+blending, and image preprocessing. The last reported run passed 28 test cases;
+that run preceded recent CLI changes. Unit tests do not load model weights;
+inference validation is separate and requires substantial memory.
 
-## Estructura actual
+## Current structure
 
 ```text
 src/tiled_upscaler/
-├── device.py          # selección de dispositivo y precisión
-├── preprocessing.py   # imagen PIL → tensores para VAE y ControlNet
-├── tiling.py          # coordenadas, máscaras y blending
-├── engine.py          # modelos y bucle manual de difusión tiled
-└── cli.py             # interfaz Typer
+├── device.py          # device and precision selection
+├── preprocessing.py   # PIL image → VAE and ControlNet tensors
+├── tiling.py          # coordinates, masks, and blending
+├── engine.py          # models and manual tiled diffusion loop
+└── cli.py             # Typer command-line interface
 tests/
 ├── test_tiling.py
 └── test_preprocessing.py
-assets/input/          # fotos locales; ignoradas por Git
+assets/input/          # local images; ignored by Git
 ```
 
-## Estado y limitaciones
+## Status and limitations
 
-- Fases 0–2: implementadas y validadas.
-- Fase 3: el flujo tiled completo está implementado y se ha probado con una
-  imagen sintética y con una fotografía local; falta seguir evaluando calidad,
-  memoria y distintos tamaños de entrada.
-- Fase 4: CLI implementado; `--help` comprobado. Falta validar una inferencia
-  ejecutada a través del CLI y completar el profiling.
-- Fase 5: Docker todavía pendiente.
-- El repositorio es experimental; la imagen puede cambiar y `creativity`,
-  `resemblance`, `steps` y el prompt requieren ajuste según el caso.
+- Phases 0–2: implemented and validated.
+- Phase 3: tiled end-to-end flow is implemented and has been tested with a
+  synthetic input and a local photograph. Quality, memory use, and different
+  input sizes still need further evaluation.
+- Phase 4: CLI implemented and `--help` checked. A CLI-driven inference and
+  complete profiling are still pending.
+- Phase 5: Docker is pending.
+- This is an experimental project. Results can vary with the prompt,
+  `creativity`, `resemblance`, and `steps`.
 
-La inferencia se ejecuta localmente; el acceso a Hugging Face se usa para
-descargar los modelos. Comprueba las licencias y condiciones de uso de cada
-modelo antes de utilizarlo o redistribuir sus resultados.
+Inference runs locally; Hugging Face access is used to download model files.
+Check each model's license and terms before use or redistribution.
 
-## Licencia
+## License
 
-La licencia del proyecto todavía está pendiente de definir.
+The project's license has not yet been selected.
