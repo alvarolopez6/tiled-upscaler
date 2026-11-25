@@ -266,7 +266,7 @@ class UpscalerEngine:
             latents,
         ).prev_sample
 
-    def denoise_step_cfg(
+    def predict_noise_cfg(
         self,
         latents: torch.Tensor,
         timestep: torch.Tensor | int,
@@ -276,7 +276,7 @@ class UpscalerEngine:
         guidance_scale: float = 7.5,
         conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
-        """Run one ControlNet-conditioned denoising step with CFG."""
+        """Predict guided noise with ControlNet and CFG, without stepping the scheduler."""
         if guidance_scale < 0:
             raise ValueError("guidance_scale must not be negative")
         if conditioning_scale < 0:
@@ -337,6 +337,36 @@ class UpscalerEngine:
             conditional_noise - unconditional_noise
         )
 
+        return guided_noise
+
+    def denoise_step_cfg(
+        self,
+        latents: torch.Tensor,
+        timestep: torch.Tensor | int,
+        unconditional_embeddings: torch.Tensor,
+        conditional_embeddings: torch.Tensor,
+        control_image: torch.Tensor,
+        guidance_scale: float = 7.5,
+        conditioning_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """Predict guided noise, then update latents once with the scheduler."""
+        latents = latents.to(device=self.device, dtype=self.dtype)
+        if isinstance(timestep, int):
+            timestep = torch.tensor(timestep, device=self.device, dtype=torch.long)
+        else:
+            timestep = timestep.to(device=self.device)
+
+        guided_noise = self.predict_noise_cfg(
+            latents,
+            timestep,
+            unconditional_embeddings,
+            conditional_embeddings,
+            control_image,
+            guidance_scale,
+            conditioning_scale,
+        )
+
+        scheduler = self.load_scheduler()
         return scheduler.step(
             guided_noise,
             timestep,
