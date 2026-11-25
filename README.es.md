@@ -1,4 +1,4 @@
-# Tiled Latent Diffusion Upscaler
+# Reescalado de imágenes con difusión latente por parches
 
 [English](README.md) | [Español](README.es.md)
 
