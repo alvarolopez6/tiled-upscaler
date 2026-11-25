@@ -12,6 +12,11 @@ from diffusers import (
 )
 
 from .device import get_device, get_dtype
+from .tiling import (
+    blend_latent_tiles,
+    compute_tile_coordinates,
+    create_gaussian_mask,
+)
 
 
 BASE_MODEL_ID = "runwayml/stable-diffusion-v1-5"
@@ -373,6 +378,92 @@ class UpscalerEngine:
             latents,
         ).prev_sample
 
+    def denoise_step_cfg_tiled(
+        self,
+        latents: torch.Tensor,
+        timestep: torch.Tensor | int,
+        unconditional_embeddings: torch.Tensor,
+        conditional_embeddings: torch.Tensor,
+        control_image: torch.Tensor,
+        tile_size: int,
+        stride: int,
+        guidance_scale: float = 7.5,
+        conditioning_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """Predict noise per latent tile, blend it, then update the full latents."""
+        if latents.ndim != 4 or latents.shape[1] != 4:
+            raise ValueError("latents must have shape [batch, 4, height, width]")
+        if control_image.ndim != 4 or control_image.shape[1] != 3:
+            raise ValueError(
+                "control_image must have shape [batch, 3, height, width]"
+            )
+        if control_image.shape[0] != latents.shape[0]:
+            raise ValueError("control_image and latents must have the same batch size")
+
+        latents = latents.to(device=self.device, dtype=self.dtype)
+        control_image = control_image.to(device=self.device, dtype=self.dtype)
+        latent_height, latent_width = latents.shape[-2:]
+
+        vae = self.load_vae()
+        vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+        expected_control_size = (
+            latent_height * vae_scale_factor,
+            latent_width * vae_scale_factor,
+        )
+        if control_image.shape[-2:] != expected_control_size:
+            raise ValueError(
+                "control_image spatial size must match the latents times the "
+                f"VAE scale factor ({vae_scale_factor})"
+            )
+
+        if isinstance(timestep, int):
+            timestep = torch.tensor(timestep, device=self.device, dtype=torch.long)
+        else:
+            timestep = timestep.to(device=self.device)
+
+        coordinates = compute_tile_coordinates(
+            latent_height,
+            latent_width,
+            tile_size,
+            stride,
+        )
+        mask = create_gaussian_mask(
+            min(tile_size, latent_height),
+            min(tile_size, latent_width),
+        )
+
+        noise_tiles: list[torch.Tensor] = []
+        for y1, y2, x1, x2 in coordinates:
+            latent_tile = latents[:, :, y1:y2, x1:x2]
+            pixel_tile = control_image[
+                :,
+                :,
+                y1 * vae_scale_factor : y2 * vae_scale_factor,
+                x1 * vae_scale_factor : x2 * vae_scale_factor,
+            ]
+            noise_tiles.append(
+                self.predict_noise_cfg(
+                    latent_tile,
+                    timestep,
+                    unconditional_embeddings,
+                    conditional_embeddings,
+                    pixel_tile,
+                    guidance_scale,
+                    conditioning_scale,
+                )
+            )
+
+        guided_noise = blend_latent_tiles(
+            latent_height,
+            latent_width,
+            coordinates,
+            noise_tiles,
+            mask,
+        )
+
+        scheduler = self.load_scheduler()
+        return scheduler.step(guided_noise, timestep, latents).prev_sample
+
     def denoise(
         self,
         latents: torch.Tensor,
@@ -413,6 +504,37 @@ class UpscalerEngine:
                 unconditional_embeddings,
                 conditional_embeddings,
                 control_image,
+                guidance_scale,
+                conditioning_scale,
+            )
+
+        return latents
+
+    def denoise_cfg_tiled(
+        self,
+        latents: torch.Tensor,
+        timesteps: torch.Tensor,
+        unconditional_embeddings: torch.Tensor,
+        conditional_embeddings: torch.Tensor,
+        control_image: torch.Tensor,
+        tile_size: int,
+        stride: int,
+        guidance_scale: float = 7.5,
+        conditioning_scale: float = 1.0,
+    ) -> torch.Tensor:
+        """Run the ControlNet and CFG denoising loop over latent tiles."""
+        if timesteps.ndim != 1 or timesteps.numel() == 0:
+            raise ValueError("timesteps must be a non-empty 1D tensor")
+
+        for timestep in timesteps:
+            latents = self.denoise_step_cfg_tiled(
+                latents,
+                timestep,
+                unconditional_embeddings,
+                conditional_embeddings,
+                control_image,
+                tile_size,
+                stride,
                 guidance_scale,
                 conditioning_scale,
             )
