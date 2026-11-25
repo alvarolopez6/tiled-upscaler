@@ -1,8 +1,10 @@
 import pytest
 import numpy as np
+import torch
 
 from tiled_upscaler.tiling import (
     blend_tiles,
+    blend_latent_tiles,
     compute_tile_coordinates,
     create_gaussian_mask,
 )
@@ -169,5 +171,50 @@ def test_blend_tiles_rejects_uncovered_output_pixels() -> None:
             3,
             coordinates=[(0, 2, 0, 2)],
             tiles=[np.ones((2, 2), dtype=np.float32)],
+            mask=np.ones((2, 2), dtype=np.float32),
+        )
+
+
+def test_blend_latent_tiles_reconstructs_constant_multi_channel_latents() -> None:
+    coordinates = [
+        (0, 2, 0, 2),
+        (0, 2, 1, 3),
+        (1, 3, 0, 2),
+        (1, 3, 1, 3),
+    ]
+    tiles = [
+        torch.full((2, 4, 2, 2), 5.0, dtype=torch.float16)
+        for _ in coordinates
+    ]
+    mask = np.array(
+        [[1.0, 0.5], [0.5, 0.25]],
+        dtype=np.float32,
+    )
+
+    result = blend_latent_tiles(3, 3, coordinates, tiles, mask)
+
+    assert result.shape == (2, 4, 3, 3)
+    assert result.dtype == torch.float16
+    assert torch.allclose(result, torch.full_like(result, 5.0))
+
+
+def test_blend_latent_tiles_rejects_a_tile_with_the_wrong_shape() -> None:
+    with pytest.raises(ValueError):
+        blend_latent_tiles(
+            2,
+            2,
+            coordinates=[(0, 2, 0, 2)],
+            tiles=[torch.ones((1, 4, 3, 2))],
+            mask=np.ones((2, 2), dtype=np.float32),
+        )
+
+
+def test_blend_latent_tiles_rejects_uncovered_output_pixels() -> None:
+    with pytest.raises(ValueError):
+        blend_latent_tiles(
+            3,
+            3,
+            coordinates=[(0, 2, 0, 2)],
+            tiles=[torch.ones((1, 4, 2, 2))],
             mask=np.ones((2, 2), dtype=np.float32),
         )

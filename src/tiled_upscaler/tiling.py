@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import TypeAlias
 
 import numpy as np
+import torch
 
 
 TileCoordinates: TypeAlias = tuple[int, int, int, int]
@@ -130,3 +131,71 @@ def blend_tiles(
         raise ValueError("some output pixels received no tile weight")
 
     return value_accum / weight_accum
+
+
+def blend_latent_tiles(
+    output_height: int,
+    output_width: int,
+    coordinates: Sequence[TileCoordinates],
+    tiles: Sequence[torch.Tensor],
+    mask: np.ndarray | torch.Tensor,
+) -> torch.Tensor:
+    """Blend overlapping latent prediction tiles shaped [batch, channels, H, W]."""
+    if output_height <= 0 or output_width <= 0:
+        raise ValueError("output dimensions must be positive")
+    if len(coordinates) != len(tiles):
+        raise ValueError("coordinates and tiles must have the same length")
+    if not tiles:
+        raise ValueError("at least one tile is required")
+    if getattr(mask, "ndim", None) != 2:
+        raise ValueError("mask must be a 2D array or tensor")
+
+    first_tile = tiles[0]
+    if first_tile.ndim != 4:
+        raise ValueError("tiles must have shape [batch, channels, height, width]")
+
+    batch_size, channels = first_tile.shape[:2]
+    value_accum = torch.zeros(
+        (batch_size, channels, output_height, output_width),
+        device=first_tile.device,
+        dtype=torch.float32,
+    )
+    weight_accum = torch.zeros(
+        (1, 1, output_height, output_width),
+        device=first_tile.device,
+        dtype=torch.float32,
+    )
+    mask_tensor = torch.as_tensor(
+        mask,
+        device=first_tile.device,
+        dtype=torch.float32,
+    )
+
+    for (y1, y2, x1, x2), tile in zip(coordinates, tiles):
+        tile_height = y2 - y1
+        tile_width = x2 - x1
+
+        if not (0 <= y1 < y2 <= output_height):
+            raise ValueError("tile coordinates are outside the output height")
+        if not (0 <= x1 < x2 <= output_width):
+            raise ValueError("tile coordinates are outside the output width")
+        if tile.ndim != 4 or tile.shape != (
+            batch_size,
+            channels,
+            tile_height,
+            tile_width,
+        ):
+            raise ValueError("tile shape does not match its coordinates or other tiles")
+        if tile.device != first_tile.device or tile.dtype != first_tile.dtype:
+            raise ValueError("all tiles must share the same device and dtype")
+        if mask_tensor.shape[0] < tile_height or mask_tensor.shape[1] < tile_width:
+            raise ValueError("mask is smaller than a tile")
+
+        tile_mask = mask_tensor[:tile_height, :tile_width][None, None, :, :]
+        value_accum[:, :, y1:y2, x1:x2] += tile.float() * tile_mask
+        weight_accum[:, :, y1:y2, x1:x2] += tile_mask
+
+    if torch.any(weight_accum == 0):
+        raise ValueError("some output pixels received no tile weight")
+
+    return (value_accum / weight_accum).to(dtype=first_tile.dtype)
