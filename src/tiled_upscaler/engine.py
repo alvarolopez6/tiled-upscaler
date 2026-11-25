@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 from transformers import CLIPTextModel, CLIPTokenizer
+from PIL import Image
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
@@ -12,6 +13,7 @@ from diffusers import (
 )
 
 from .device import get_device, get_dtype
+from .preprocessing import preprocess_image
 from .tiling import (
     blend_latent_tiles,
     compute_tile_coordinates,
@@ -540,6 +542,66 @@ class UpscalerEngine:
             )
 
         return latents
+
+    def upscale(
+        self,
+        image: Image.Image,
+        prompt: str,
+        negative_prompt: str = "",
+        scale: float = 2.0,
+        creativity: float = 0.35,
+        resemblance: float = 0.85,
+        steps: int = 20,
+        guidance_scale: float = 7.5,
+        tile_size: int = 512,
+        overlap: int = 256,
+    ) -> torch.Tensor:
+        """Upscale a PIL image and return an RGB tensor in the [0, 1] range.
+
+        ``tile_size`` and ``overlap`` are specified in output-image pixels.
+        The returned tensor has shape ``[1, 3, height, width]``.
+        """
+        if steps <= 0:
+            raise ValueError("steps must be positive")
+        if tile_size <= 0:
+            raise ValueError("tile_size must be positive")
+        if overlap < 0 or overlap >= tile_size:
+            raise ValueError("overlap must be non-negative and smaller than tile_size")
+
+        vae_image, control_image = preprocess_image(image, scale)
+        vae = self.load_vae()
+        vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+
+        if tile_size % vae_scale_factor != 0:
+            raise ValueError("tile_size must be divisible by the VAE scale factor")
+        pixel_stride = tile_size - overlap
+        if pixel_stride % vae_scale_factor != 0:
+            raise ValueError("tile_size - overlap must be divisible by the VAE scale factor")
+
+        latents = self.encode_image(vae_image)
+        unconditional_embeddings, conditional_embeddings = self.encode_prompt_pair(
+            prompt,
+            negative_prompt,
+        )
+        noisy_latents, timesteps = self.prepare_noisy_latents(
+            latents,
+            creativity,
+            steps,
+        )
+
+        final_latents = self.denoise_cfg_tiled(
+            noisy_latents,
+            timesteps,
+            unconditional_embeddings,
+            conditional_embeddings,
+            control_image,
+            tile_size // vae_scale_factor,
+            pixel_stride // vae_scale_factor,
+            guidance_scale,
+            resemblance,
+        )
+
+        return self.decode_latents(final_latents)
 
     def load_unet(self) -> UNet2DConditionModel:
         """Load the conditional UNet used for noise prediction."""

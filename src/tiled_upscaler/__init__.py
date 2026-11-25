@@ -2,5 +2,7 @@
 
 
 def main() -> None:
-    """Entry point reserved for the future CLI."""
-    print("tiled-upscaler: CLI pendiente de implementación")
+    """Delegate to the command-line interface."""
+    from .cli import main as cli_main
+
+    cli_main()

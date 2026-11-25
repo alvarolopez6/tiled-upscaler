@@ -14,3 +14,6 @@ planning/
 
 # Private learning notes
 private_docs/
+
+# Local test images (may be private, copyrighted, or large)
+assets/input/
