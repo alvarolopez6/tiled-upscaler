@@ -224,7 +224,8 @@ class UpscalerEngine:
         init_timestep = min(int(steps * strength), steps)
         start_step = max(steps - init_timestep, 0)
         timesteps = scheduler.timesteps[start_step:]
-        timestep = timesteps[0]
+        # add_noise expects one timestep per item in the batch.
+        timestep = timesteps[:1].repeat(latents.shape[0])
 
         noisy_latents = self.inject_noise(latents, timestep, noise)
         return noisy_latents, timesteps
@@ -271,15 +272,25 @@ class UpscalerEngine:
         timestep: torch.Tensor | int,
         unconditional_embeddings: torch.Tensor,
         conditional_embeddings: torch.Tensor,
+        control_image: torch.Tensor,
         guidance_scale: float = 7.5,
+        conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
-        """Run one denoising step with classifier-free guidance."""
+        """Run one ControlNet-conditioned denoising step with CFG."""
         if guidance_scale < 0:
             raise ValueError("guidance_scale must not be negative")
+        if conditioning_scale < 0:
+            raise ValueError("conditioning_scale must not be negative")
+        if control_image.ndim != 4 or control_image.shape[1] != 3:
+            raise ValueError("control_image must have shape [batch, 3, height, width]")
+        if control_image.shape[0] != latents.shape[0]:
+            raise ValueError("control_image and latents must have the same batch size")
 
         unet = self.load_unet()
+        controlnet = self.load_controlnet()
         scheduler = self.load_scheduler()
         latents = latents.to(device=self.device, dtype=self.dtype)
+        control_image = control_image.to(device=self.device, dtype=self.dtype)
         unconditional_embeddings = unconditional_embeddings.to(
             device=self.device,
             dtype=self.dtype,
@@ -299,15 +310,26 @@ class UpscalerEngine:
             latent_model_input,
             timestep,
         )
+        control_model_input = torch.cat([control_image, control_image])
         text_embeddings = torch.cat(
             [unconditional_embeddings, conditional_embeddings]
         )
 
         with torch.no_grad():
+            down_block_res_samples, mid_block_res_sample = controlnet(
+                sample=latent_model_input,
+                timestep=timestep,
+                encoder_hidden_states=text_embeddings,
+                controlnet_cond=control_model_input,
+                conditioning_scale=conditioning_scale,
+                return_dict=False,
+            )
             noise_predictions = unet(
                 latent_model_input,
                 timestep,
                 encoder_hidden_states=text_embeddings,
+                down_block_additional_residuals=down_block_res_samples,
+                mid_block_additional_residual=mid_block_res_sample,
             ).sample
 
         unconditional_noise, conditional_noise = noise_predictions.chunk(2)
@@ -346,9 +368,11 @@ class UpscalerEngine:
         timesteps: torch.Tensor,
         unconditional_embeddings: torch.Tensor,
         conditional_embeddings: torch.Tensor,
+        control_image: torch.Tensor,
         guidance_scale: float = 7.5,
+        conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
-        """Run the denoising loop with classifier-free guidance."""
+        """Run the ControlNet-conditioned denoising loop with CFG."""
         if timesteps.ndim != 1 or timesteps.numel() == 0:
             raise ValueError("timesteps must be a non-empty 1D tensor")
 
@@ -358,7 +382,9 @@ class UpscalerEngine:
                 timestep,
                 unconditional_embeddings,
                 conditional_embeddings,
+                control_image,
                 guidance_scale,
+                conditioning_scale,
             )
 
         return latents
