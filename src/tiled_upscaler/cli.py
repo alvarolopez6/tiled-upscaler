@@ -63,7 +63,7 @@ def upscale_command(
         help="Negative text prompt.",
     ),
     guidance_scale: float = typer.Option(
-        7.5,
+        3.0,
         min=0.0,
         help="Classifier-free guidance strength.",
     ),

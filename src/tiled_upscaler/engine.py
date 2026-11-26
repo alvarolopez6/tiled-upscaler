@@ -207,8 +207,8 @@ class UpscalerEngine:
         if not 0.0 <= creativity <= 1.0:
             raise ValueError("creativity must be between 0.0 and 1.0")
 
-        minimum_strength = 0.15
-        maximum_strength = 0.75
+        minimum_strength = 0.05
+        maximum_strength = 0.45
         return minimum_strength + creativity * (
             maximum_strength - minimum_strength
         )
@@ -228,7 +228,7 @@ class UpscalerEngine:
         scheduler.set_timesteps(steps, device=self.device)
         strength = self.creativity_to_strength(creativity)
 
-        init_timestep = min(int(steps * strength), steps)
+        init_timestep = max(1, min(int(steps * strength), steps))
         start_step = max(steps - init_timestep, 0)
         timesteps = scheduler.timesteps[start_step:]
         # add_noise expects one timestep per item in the batch.
@@ -280,7 +280,7 @@ class UpscalerEngine:
         unconditional_embeddings: torch.Tensor,
         conditional_embeddings: torch.Tensor,
         control_image: torch.Tensor,
-        guidance_scale: float = 7.5,
+        guidance_scale: float = 3.0,
         conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
         """Predict guided noise with ControlNet and CFG, without stepping the scheduler."""
@@ -353,7 +353,7 @@ class UpscalerEngine:
         unconditional_embeddings: torch.Tensor,
         conditional_embeddings: torch.Tensor,
         control_image: torch.Tensor,
-        guidance_scale: float = 7.5,
+        guidance_scale: float = 3.0,
         conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
         """Predict guided noise, then update latents once with the scheduler."""
@@ -389,7 +389,7 @@ class UpscalerEngine:
         control_image: torch.Tensor,
         tile_size: int,
         stride: int,
-        guidance_scale: float = 7.5,
+        guidance_scale: float = 3.0,
         conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
         """Predict noise per latent tile, blend it, then update the full latents."""
@@ -492,7 +492,7 @@ class UpscalerEngine:
         unconditional_embeddings: torch.Tensor,
         conditional_embeddings: torch.Tensor,
         control_image: torch.Tensor,
-        guidance_scale: float = 7.5,
+        guidance_scale: float = 3.0,
         conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
         """Run the ControlNet-conditioned denoising loop with CFG."""
@@ -521,7 +521,7 @@ class UpscalerEngine:
         control_image: torch.Tensor,
         tile_size: int,
         stride: int,
-        guidance_scale: float = 7.5,
+        guidance_scale: float = 3.0,
         conditioning_scale: float = 1.0,
     ) -> torch.Tensor:
         """Run the ControlNet and CFG denoising loop over latent tiles."""
@@ -552,7 +552,7 @@ class UpscalerEngine:
         creativity: float = 0.35,
         resemblance: float = 0.85,
         steps: int = 20,
-        guidance_scale: float = 7.5,
+        guidance_scale: float = 3.0,
         tile_size: int = 512,
         overlap: int = 256,
     ) -> torch.Tensor:

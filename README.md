@@ -67,6 +67,7 @@ uv run tiled-upscaler \
   --scale 2 \
   --creativity 0.25 \
   --resemblance 0.85 \
+  --guidance-scale 3.0 \
   --steps 20 \
   --tile-size 512 \
   --overlap 256 \
@@ -80,8 +81,35 @@ reports the device, tiles per denoising step, effective steps, and elapsed time.
 On CUDA it reports peak allocated memory; on MPS it reports current allocated
 memory, not the peak.
 
+Current defaults are `guidance_scale=3.0` and a linear `creativity` to `strength`
+mapping of `[0,1] → [0.05,0.45]`. These are provisional educational settings,
+not universally optimal values.
+
 The engine can also be used from Python with `UpscalerEngine.upscale()`. It
 accepts a PIL image and returns an RGB tensor `[1, 3, H, W]` in `[0, 1]`.
+
+## Early visual evaluation
+
+This is an educational diffusion prototype, not a production super-resolution
+system. We compared local beach (`256×256 → 512×512`) and lake
+(`512×512 → 1024×1024`) photos with Lanczos and VAE-only baselines. The private
+input/output images are not included in the repository.
+
+Controlled runs used fixed seeds, 20 scheduler steps, `tile_size=512`,
+`overlap=256`, and prompts describing each scene. With the current creativity
+mapping (`[0,1] → strength [0.05,0.45]`):
+
+| Creativity | Strength | Effective steps (of 20) | Observation |
+|---:|---:|---:|---|
+| 0.00 | 0.05 | 1 | Very conservative; close to the VAE reconstruction. |
+| 0.25 | 0.15 | 3 | Preserves broad composition, but can remain soft. |
+| 0.50 | 0.25 | 5 | Allows more reinterpretation; no consistent sharpness gain. |
+
+A CFG comparison at creativity `0.25` found that scales `1–3` generally kept
+the composition better than `7.5`; high guidance could create visible artifacts
+with generic prompts. Across these two photos, diffusion did **not consistently
+outperform Lanczos in sharpness**. This is an important limitation of the
+current model/configuration; adding more steps alone did not reliably fix it.
 
 ## Docker on Linux
 
@@ -124,8 +152,8 @@ uv run pytest
 ```
 
 Tests cover tile coordinates, Gaussian masks, 2D NumPy blending, PyTorch latent
-blending, and image preprocessing. The last reported run passed 28 test cases;
-that run preceded recent CLI changes. Unit tests do not load model weights;
+blending, image preprocessing, and the creativity-to-strength mapping. The
+latest reported run passed 33 test cases. Unit tests do not load model weights;
 inference validation is separate and requires substantial memory.
 
 ## Current structure
@@ -142,6 +170,7 @@ docker-compose.yml     # CPU-compatible Compose service
 docker-compose.nvidia.yml # optional NVIDIA GPU override
 tests/
 ├── test_tiling.py
+├── test_engine.py
 └── test_preprocessing.py
 assets/input/          # local images; ignored by Git
 ```
@@ -149,13 +178,14 @@ assets/input/          # local images; ignored by Git
 ## Status and limitations
 
 - Phases 0–2: implemented and validated.
-- Phase 3: tiled end-to-end flow is implemented and has been tested with a
-  synthetic input and a local photograph. Quality, memory use, and different
-  input sizes still need further evaluation.
-- Phase 4: CLI implemented and `--help` checked. A CLI-driven inference and
-  complete profiling are still pending.
-- Phase 5: Docker and CPU/NVIDIA Compose configurations are implemented; build
-  and inference on Linux are not yet validated.
+- Phase 3: tiled end-to-end flow has been tested with synthetic input and local
+  photos. Visual evaluation shows that current diffusion outputs can be softer
+  than Lanczos; quality still needs work.
+- Phase 4: CLI `--help` and real inference were tested on MPS and NVIDIA CUDA.
+  Profiling is partial: MPS reports current allocated memory, not peak.
+- Phase 5: Docker CPU/NVIDIA configurations are implemented and an NVIDIA
+  inference ran technically. Rebuild and revalidate after the latest
+  guidance/creativity calibration; CPU-only Docker is not yet tested.
 - This is an experimental project. Results can vary with the prompt,
   `creativity`, `resemblance`, and `steps`.
 

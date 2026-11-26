@@ -67,6 +67,7 @@ uv run tiled-upscaler \
   --scale 2 \
   --creativity 0.25 \
   --resemblance 0.85 \
+  --guidance-scale 3.0 \
   --steps 20 \
   --tile-size 512 \
   --overlap 256 \
@@ -80,8 +81,35 @@ informa del dispositivo, parches por paso, pasos efectivos y tiempo. En CUDA
 muestra el pico de memoria asignada; en MPS, la memoria asignada actual, no el
 pico.
 
+Los valores actuales por defecto son `guidance_scale=3.0` y un mapeo lineal de
+`creativity` a `strength` de `[0,1] → [0.05,0.45]`. Son ajustes educativos
+provisionales, no valores óptimos universales.
+
 También se puede usar `UpscalerEngine.upscale()` desde Python. Recibe una imagen
 PIL y devuelve un tensor RGB `[1, 3, H, W]` en `[0, 1]`.
+
+## Evaluación visual inicial
+
+Este es un prototipo educativo de difusión, no un sistema de super-resolución
+de producción. Comparamos fotos locales de playa (`256×256 → 512×512`) y lago
+(`512×512 → 1024×1024`) con baselines Lanczos y VAE-only. Las imágenes locales
+de entrada/salida no se incluyen en el repositorio.
+
+Las pruebas controladas usaron semillas fijas, 20 pasos del scheduler,
+`tile_size=512`, `overlap=256` y prompts que describían cada escena. Con el mapeo
+actual (`[0,1] → strength [0.05,0.45]`), los valores probados corresponden a:
+
+| Creativity | Strength | Pasos efectivos (de 20) | Observación |
+|---:|---:|---:|---|
+| 0.00 | 0.05 | 1 | Muy conservador; cercano a la reconstrucción VAE. |
+| 0.25 | 0.15 | 3 | Conserva la composición general, pero puede quedar suave. |
+| 0.50 | 0.25 | 5 | Permite más reinterpretación; no mejora la nitidez de forma consistente. |
+
+Una comparación de CFG con creativity `0.25` encontró que escalas `1–3` suelen
+conservar mejor la composición que `7.5`; una guía alta puede producir artefactos
+visibles con prompts genéricos. En estas dos fotos, la difusión **no superó a
+Lanczos de forma consistente en nitidez**. Es una limitación importante del
+modelo/configuración actual; añadir más pasos por sí solo no garantiza resolverla.
 
 ## Docker en Linux
 
@@ -125,10 +153,10 @@ uv run pytest
 ```
 
 Los tests cubren coordenadas, máscaras gaussianas, blending NumPy 2D, blending
-PyTorch de latentes y preprocesamiento de imágenes. La última ejecución
-reportada pasó 28 casos; se ejecutó antes de los cambios recientes del CLI. Los
-tests unitarios no cargan los modelos; la validación de inferencia se hace aparte
-y requiere bastante memoria.
+PyTorch de latentes, preprocesamiento de imágenes y el mapeo de creativity a
+strength. La última ejecución reportada pasó 33 casos. Los tests unitarios no
+cargan los modelos; la validación de inferencia se hace aparte y requiere
+bastante memoria.
 
 ## Estructura actual
 
@@ -144,6 +172,7 @@ docker-compose.yml     # servicio Compose compatible con CPU
 docker-compose.nvidia.yml # override opcional para GPU NVIDIA
 tests/
 ├── test_tiling.py
+├── test_engine.py
 └── test_preprocessing.py
 assets/input/          # imágenes locales; ignoradas por Git
 ```
@@ -151,13 +180,14 @@ assets/input/          # imágenes locales; ignoradas por Git
 ## Estado y limitaciones
 
 - Fases 0–2: implementadas y validadas.
-- Fase 3: flujo tiled completo implementado y probado con una entrada sintética
-  y una fotografía local. Falta seguir evaluando calidad, memoria y distintos
-  tamaños de entrada.
-- Fase 4: CLI implementado y `--help` comprobado. Falta validar una inferencia
-  lanzada desde el CLI y completar el profiling.
-- Fase 5: Docker y configuraciones Compose para CPU/NVIDIA implementados; aún
-  falta validar build e inferencia en Linux.
+- Fase 3: flujo tiled completo probado con entrada sintética y fotos locales.
+  La evaluación visual muestra que la difusión puede quedar más suave que
+  Lanczos; la calidad todavía requiere trabajo.
+- Fase 4: CLI `--help` e inferencia real probados en MPS y NVIDIA CUDA.
+  El profiling es parcial: MPS informa memoria asignada actual, no pico.
+- Fase 5: Docker CPU/NVIDIA implementado y una inferencia NVIDIA ejecutada
+  técnicamente. Hay que reconstruir y revalidar tras los últimos ajustes de
+  CFG/creativity. Docker CPU todavía no se ha probado.
 - El proyecto es experimental. El resultado puede variar según el prompt,
   `creativity`, `resemblance` y `steps`.
 
