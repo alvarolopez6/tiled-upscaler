@@ -83,6 +83,40 @@ memory, not the peak.
 The engine can also be used from Python with `UpscalerEngine.upscale()`. It
 accepts a PIL image and returns an RGB tensor `[1, 3, H, W]` in `[0, 1]`.
 
+## Docker on Linux
+
+The Docker image targets Linux. The base Compose configuration does not require
+a GPU, so PyTorch can fall back to CPU. On a Linux host with NVIDIA Container
+Toolkit, add the NVIDIA override to expose the GPU:
+
+```bash
+docker compose build
+docker compose run --rm tiled-upscaler --help
+```
+
+CPU inference example:
+
+```bash
+docker compose run --rm tiled-upscaler \
+  --input /input/photo.jpg \
+  --output /output/photo_upscaled.png \
+  --steps 20
+```
+
+NVIDIA GPU inference example:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml run --rm tiled-upscaler \
+  --input /input/photo.jpg \
+  --output /output/photo_upscaled.png \
+  --steps 20
+```
+
+The host must have a compatible NVIDIA driver and NVIDIA Container Toolkit.
+The image is based on CUDA 13.2.1 to align with the CUDA 13.2 dependencies in
+the current Linux `uv.lock` resolution. Docker on macOS cannot pass Apple MPS to
+this Linux container; use native `uv` execution on a Mac for MPS acceleration.
+
 ## Tests
 
 ```bash
@@ -103,6 +137,9 @@ src/tiled_upscaler/
 ├── tiling.py          # coordinates, masks, and blending
 ├── engine.py          # models and manual tiled diffusion loop
 └── cli.py             # Typer command-line interface
+Dockerfile             # Linux/CUDA image
+docker-compose.yml     # CPU-compatible Compose service
+docker-compose.nvidia.yml # optional NVIDIA GPU override
 tests/
 ├── test_tiling.py
 └── test_preprocessing.py
@@ -117,7 +154,8 @@ assets/input/          # local images; ignored by Git
   input sizes still need further evaluation.
 - Phase 4: CLI implemented and `--help` checked. A CLI-driven inference and
   complete profiling are still pending.
-- Phase 5: Docker is pending.
+- Phase 5: Docker and CPU/NVIDIA Compose configurations are implemented; build
+  and inference on Linux are not yet validated.
 - This is an experimental project. Results can vary with the prompt,
   `creativity`, `resemblance`, and `steps`.
 

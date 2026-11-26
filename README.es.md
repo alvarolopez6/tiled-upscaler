@@ -83,6 +83,41 @@ pico.
 También se puede usar `UpscalerEngine.upscale()` desde Python. Recibe una imagen
 PIL y devuelve un tensor RGB `[1, 3, H, W]` en `[0, 1]`.
 
+## Docker en Linux
+
+La imagen Docker está dirigida a Linux. La configuración base de Compose no
+exige GPU, por lo que PyTorch puede usar CPU. En un host Linux con NVIDIA
+Container Toolkit, añade el override de NVIDIA para exponer la GPU:
+
+```bash
+docker compose build
+docker compose run --rm tiled-upscaler --help
+```
+
+Ejemplo en CPU:
+
+```bash
+docker compose run --rm tiled-upscaler \
+  --input /input/photo.jpg \
+  --output /output/photo_upscaled.png \
+  --steps 20
+```
+
+Ejemplo con GPU NVIDIA:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml run --rm tiled-upscaler \
+  --input /input/photo.jpg \
+  --output /output/photo_upscaled.png \
+  --steps 20
+```
+
+El host necesita un driver NVIDIA compatible y NVIDIA Container Toolkit. La
+imagen usa CUDA 13.2.1 para alinearse con las dependencias CUDA 13.2 de la
+resolución Linux actual de `uv.lock`. Docker en macOS no puede exponer Apple MPS
+a este contenedor Linux; para acelerar en Mac, ejecuta el proyecto de forma
+nativa con `uv`.
+
 ## Tests
 
 ```bash
@@ -104,6 +139,9 @@ src/tiled_upscaler/
 ├── tiling.py          # coordenadas, máscaras y blending
 ├── engine.py          # modelos y bucle manual de difusión tiled
 └── cli.py             # interfaz Typer
+Dockerfile             # imagen Linux/CUDA
+docker-compose.yml     # servicio Compose compatible con CPU
+docker-compose.nvidia.yml # override opcional para GPU NVIDIA
 tests/
 ├── test_tiling.py
 └── test_preprocessing.py
@@ -118,7 +156,8 @@ assets/input/          # imágenes locales; ignoradas por Git
   tamaños de entrada.
 - Fase 4: CLI implementado y `--help` comprobado. Falta validar una inferencia
   lanzada desde el CLI y completar el profiling.
-- Fase 5: Docker pendiente.
+- Fase 5: Docker y configuraciones Compose para CPU/NVIDIA implementados; aún
+  falta validar build e inferencia en Linux.
 - El proyecto es experimental. El resultado puede variar según el prompt,
   `creativity`, `resemblance` y `steps`.
 

@@ -1,0 +1,12 @@
+services:
+  tiled-upscaler:
+    build:
+      context: .
+    image: tiled-upscaler:linux
+    init: true
+    environment:
+      HF_HOME: /models
+    volumes:
+      - ./models:/models
+      - ./assets/input:/input:ro
+      - ./assets/output:/output

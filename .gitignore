@@ -17,6 +17,8 @@ private_docs/
 
 # Local test images (may be private, copyrighted, or large)
 assets/input/
+assets/output/
+models/
 
 # macOS Finder metadata
 .DS_Store
